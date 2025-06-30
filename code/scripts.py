@@ -1,6 +1,8 @@
 from PIL import Image, ImageDraw, ImageFilter
-from moviepy.editor import *
+from moviepy import *
 import numpy, os
+
+from init import bug_report
 
 
 class Movie:
@@ -13,7 +15,7 @@ class Movie:
 
     def split_into_frames(self):
         video_clip = VideoFileClip(self.video_file)
-        video_clip.audio.write_audiofile(self.path + f"/{self.video_name}-audio.mp3", verbose=False, logger=None)
+        video_clip.audio.write_audiofile(self.path + f"/{self.video_name}-audio.mp3", logger=None)
 
         self.path_frames = self.path + "/frames"
         step = 1 / 30.0 if video_clip.fps > 60.0 else 1 / video_clip.fps
@@ -32,6 +34,7 @@ class Movie:
         video_clip.close()
         return True
 
+    @bug_report
     def unity_into_video(self, frames):
         video_clip = VideoFileClip(self.video_file)
         fps = 30.0 if video_clip.fps > 60.0 else video_clip.fps
@@ -39,14 +42,14 @@ class Movie:
         os.remove(self.video_file)
 
         clip = ImageSequenceClip(list(map(lambda x: self.path_frames + "/" + x, frames)), fps=fps)
-        clip.write_videofile(self.video_file, verbose=False, logger=None)
+        clip.write_videofile(self.video_file, logger=None)
         clip.close()
 
         video_clip = VideoFileClip(self.video_file)
         audio_clip = AudioFileClip(self.path + f"/{self.video_name}-audio.mp3")
 
-        video_clip_with_audio = video_clip.set_audio(audio_clip)
-        video_clip_with_audio.write_videofile(self.path + "/acs-" + self.video_name + ".mp4", verbose=False, logger=None)
+        video_clip_with_audio = video_clip.with_audio(audio_clip)
+        video_clip_with_audio.write_videofile(self.path + "/acs-" + self.video_name + ".mp4", logger=None)
 
         video_clip.close()
         audio_clip.close()
