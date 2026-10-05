@@ -1,0 +1,11 @@
+services:
+  bot:
+    build: .
+    image: ghcr.io/edeev/circlechek:latest
+    env_file: .env
+    volumes:
+      - data:/app/data
+    restart: unless-stopped
+
+volumes:
+  data:

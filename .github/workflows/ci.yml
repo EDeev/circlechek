@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.14.0 -r requirements.txt
+      - name: Ruff (синтаксис и ошибки)
+        run: ruff check --select E9,F code
+      - name: Обработка тестового кружочка (градиент и блюр, со звуком и без)
+        working-directory: code
+        env:
+          BOT_TOKEN: "123456:TEST"
+        run: |
+          python - <<'PY'
+          import os, shutil, subprocess
+          import imageio_ffmpeg
+          from scripts import Movie, process_frames
+          import handlers  # noqa: F401 — бот импортируется без ошибок
+
+          ff = imageio_ffmpeg.get_ffmpeg_exe()
+          src = {
+              "audio": ["-f", "lavfi", "-i", "testsrc=size=240x240:rate=30:duration=1",
+                        "-f", "lavfi", "-i", "sine=duration=1", "-shortest"],
+              "silent": ["-f", "lavfi", "-i", "color=c=black:size=240x240:rate=30:duration=1"],
+          }
+          for name, args in src.items():
+              for mode in ("grad", "blur"):
+                  path = f"/tmp/{name}-{mode}"
+                  shutil.rmtree(path, ignore_errors=True)
+                  os.makedirs(path + "/frames"); os.makedirs(path + "/background")
+                  subprocess.run([ff, "-loglevel", "error", "-y", *args, "-c:v", "libx264",
+                                  "-pix_fmt", "yuv420p", path + "/v.mp4"], check=True)
+                  movie = Movie(path + "/v.mp4", "v", path)
+                  assert movie.split_into_frames()
+                  result = movie.unity_into_video(process_frames(path + "/frames", path + "/background", mode))
+                  assert os.path.getsize(result) > 0
+                  print(name, mode, "ok")
+          PY
