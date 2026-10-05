@@ -1,8 +1,9 @@
-from PIL import Image, ImageDraw, ImageFilter
-from moviepy import *
-import numpy, os
+import logging
+import os
 
-from init import bug_report
+import numpy
+from moviepy import AudioFileClip, ImageSequenceClip, VideoFileClip
+from PIL import Image, ImageDraw, ImageFilter
 
 
 class Movie:
@@ -11,48 +12,52 @@ class Movie:
         self.video_name = video_name
         self.path = path
 
-        self.path_frames = ""
+        self.path_frames = self.path + "/frames"
+        self.path_audio = self.path + f"/{self.video_name}-audio.mp3"
+        self.has_audio = False
 
     def split_into_frames(self):
-        video_clip = VideoFileClip(self.video_file)
-        video_clip.audio.write_audiofile(self.path + f"/{self.video_name}-audio.mp3", logger=None)
+        try:
+            video_clip = VideoFileClip(self.video_file)
+        except Exception:
+            logging.exception("Не удалось открыть кружочек")
+            return False
 
-        self.path_frames = self.path + "/frames"
-        step = 1 / 30.0 if video_clip.fps > 60.0 else 1 / video_clip.fps
+        try:
+            # у кружочка может не быть звуковой дорожки
+            if video_clip.audio is not None:
+                video_clip.audio.write_audiofile(self.path_audio, logger=None)
+                self.has_audio = True
 
-        count = 0
-        for current_duration in numpy.arange(0, video_clip.duration, step):
-            count += 1
+            step = 1 / 30.0 if video_clip.fps > 60.0 else 1 / video_clip.fps
 
-            str_c = str(count)
-            num = "00000"[:(len(str_c) * -1)] + str_c
+            for count, current_duration in enumerate(numpy.arange(0, video_clip.duration, step), start=1):
+                frame_filename = os.path.join(self.path_frames, f"frame-{count:05}.jpeg")
+                video_clip.save_frame(frame_filename, current_duration)
+        except Exception:
+            logging.exception("Не удалось разобрать кружочек на кадры")
+            return False
+        finally:
+            video_clip.close()
 
-            frame_filename = os.path.join(self.path_frames, f"frame-{num}.jpeg")
-            try: video_clip.save_frame(frame_filename, current_duration)
-            except Exception: return False
-
-        video_clip.close()
         return True
 
-    @bug_report
     def unity_into_video(self, frames):
         video_clip = VideoFileClip(self.video_file)
         fps = 30.0 if video_clip.fps > 60.0 else video_clip.fps
         video_clip.close()
-        os.remove(self.video_file)
 
-        clip = ImageSequenceClip(list(map(lambda x: self.path_frames + "/" + x, frames)), fps=fps)
-        clip.write_videofile(self.video_file, logger=None)
+        clip = ImageSequenceClip([self.path_frames + "/" + x for x in frames], fps=fps)
+        if self.has_audio:
+            audio_clip = AudioFileClip(self.path_audio)
+            # звук не длиннее видео, иначе последний кадр «замирает»
+            clip = clip.with_audio(audio_clip.subclipped(0, min(audio_clip.duration, clip.duration)))
+
+        result = self.path + "/acs-" + self.video_name + ".mp4"
+        clip.write_videofile(result, codec="libx264", audio_codec="aac", logger=None)
         clip.close()
 
-        video_clip = VideoFileClip(self.video_file)
-        audio_clip = AudioFileClip(self.path + f"/{self.video_name}-audio.mp3")
-
-        video_clip_with_audio = video_clip.with_audio(audio_clip)
-        video_clip_with_audio.write_videofile(self.path + "/acs-" + self.video_name + ".mp4", logger=None)
-
-        video_clip.close()
-        audio_clip.close()
+        return result
 
 
 class Frame:
@@ -61,31 +66,14 @@ class Frame:
         self.background = background
 
     def size(self):
-        image = Image.open(self.filename)
-        width, height = image.size
-        image.close()
-
-        return width, height
+        with Image.open(self.filename) as image:
+            return image.size
 
     def medium_color(self):
-        img = Image.open(self.filename)
-        width, height = img.size
+        with Image.open(self.filename) as img:
+            pixels = numpy.asarray(img.convert("RGB"), dtype=numpy.float64)
 
-        pixels = img.load()
-        r, g, b = [], [], []
-
-        for y in range(width):
-            for x in range(height):
-                p = pixels[x, y]
-                r.append(p[0])
-                g.append(p[1])
-                b.append(p[2])
-
-        r = sum(r) // len(r)
-        g = sum(g) // len(g)
-        b = sum(b) // len(b)
-
-        img.close()
+        r, g, b = (int(c) for c in pixels.reshape(-1, 3).mean(axis=0))
         return r, g, b
 
     def gradient(self, width, height, start_list, stop_list, is_horizontal_list):
@@ -99,11 +87,12 @@ class Frame:
         for i, (start, stop, is_horizontal) in enumerate(zip(start_list, stop_list, is_horizontal_list)):
             result[:, :, i] = get_gradient(start, stop, width, height, is_horizontal)
 
-        Image.fromarray(numpy.uint8(result)).save(self.background, quality=95)
+        # без обрезки тёмные и светлые цвета «переворачиваются» при переводе в uint8
+        Image.fromarray(numpy.uint8(numpy.clip(result, 0, 255))).save(self.background, quality=95)
 
     def blur(self, width, height):
-        image = Image.open(self.filename)
-        image = image.filter(ImageFilter.GaussianBlur(6))
+        with Image.open(self.filename) as image:
+            image = image.filter(ImageFilter.GaussianBlur(6))
 
         part_width = width // 64
         part_height = height // 64
@@ -129,3 +118,22 @@ class Frame:
         im1.close()
         im2.close()
         mask.close()
+
+
+def process_frames(path_frames, path_background, mode):
+    frames = sorted(os.listdir(path_frames))
+
+    for frame in frames:
+        img = Frame(path_frames + "/" + frame, path_background + "/" + f"{frame[:-5]}-g.jpeg")
+        width, height = img.size()
+
+        if mode == "blur":
+            img.blur(width, height)
+        else:
+            r, g, b = img.medium_color(); nearly = 10
+            img.gradient(width, height, (r - nearly, g - nearly, b - nearly),
+                         (r + nearly, g + nearly, b + nearly), (True, False, False))
+
+        img.unity_image()
+
+    return frames

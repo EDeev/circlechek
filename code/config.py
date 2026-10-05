@@ -1,4 +1,6 @@
-botToken = "XXXXXXXXXXXXXXXXXXXXXXXX"  # @circlechek_bot
+import os
+
+botToken = os.getenv("BOT_TOKEN", "XXXXXXXXXXXXXXXXXXXXXXXX")  # @circlechek_bot
 
 WARN = ("<b>Предупреждение!</b> Кружочек может быть с некорректными метаданными, в этом случае программа выдаст ошибку "
         "либо произведёт видео с браком! <b>Обязательно перепроверяйте получившиеся видео!</b>\n\n")

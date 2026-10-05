@@ -1,10 +1,15 @@
-from aiogram import types, F, Router
+import asyncio
+import logging
+import os
+import shutil
+import tempfile
+
+from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, CallbackQuery, ContentType, InlineKeyboardButton, InlineKeyboardMarkup, FSInputFile
 from aiogram.filters import Command
 
-import shutil
-
-from scripts import *
+from scripts import Movie, process_frames
 from config import WARN
 
 router = Router()
@@ -15,7 +20,7 @@ router = Router()
 async def helps(msg: Message) -> None:
     buttons = [[InlineKeyboardButton(text="ФУНКЦИИ", callback_data="fun"),
                 InlineKeyboardButton(text="АВТОР", callback_data="auth")]]
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons, row_width=2)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await msg.answer(text="<b>Кружочичек</b> — бот для обработки видео и кружочков в Телеграме. Для начала работы "
                           "вам достаточно скинуть квадратное видео не дольше минуты в чат, чтобы получить кружок. "
@@ -33,7 +38,7 @@ async def author(call: CallbackQuery) -> None:
                               'двух предложенных вариантах.'
                                    
                               '\n\nЯ же пишу подобные небольшие проекты, о которых вы можете узнать '
-                              'больше на моём <a href="https://github.com/IGlek">GitHub</a>.')
+                              'больше на моём <a href="https://github.com/EDeev">GitHub</a>.')
 
 
 @router.callback_query(F.data == "fun")
@@ -45,78 +50,84 @@ async def function(call: CallbackQuery) -> None:
 # ОБРАБОТЧИК ВИДЕО
 @router.message(F.content_type == ContentType.VIDEO)
 async def video_to_circle(msg: Message) -> None:
-    video = "../data/circles/" + str(msg.chat.id) + ".mp4"
+    video = f"../data/circles/{msg.chat.id}_{msg.message_id}.mp4"
 
     await msg.reply("<b>Началась обработка видео!</b> Оно должно быть квадратным и не дольше одной минуты, в ином "
                     "случае бот в ответ вернёт вам изначальное видео, а не кружочек!")
-    await msg.bot.download(file=msg.video.file_id, destination=video)
-    await msg.answer_video_note(video_note=FSInputFile(video))
-    os.remove(video)
+    try:
+        await msg.bot.download(file=msg.video.file_id, destination=video)
+        await msg.answer_video_note(video_note=FSInputFile(video))
+    except TelegramBadRequest as err:
+        logging.warning("Не удалось сделать кружочек: %s", err)
+        await msg.answer("<b>Не получилось сделать кружочек.</b> Видео должно быть квадратным, не дольше минуты "
+                         "и не больше 20 МБ.")
+    finally:
+        if os.path.exists(video):
+            os.remove(video)
 
 
 # ОБРАБОТЧИК КРУЖОЧКОВ
 @router.message(F.content_type == ContentType.VIDEO_NOTE)
 async def video_note(msg: Message) -> None:
-    buttons = [[InlineKeyboardButton(text="Градиент", callback_data="grad"),
-                InlineKeyboardButton(text="Блюр", callback_data="blur")]]
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=buttons, row_width=2)
+    # номер сообщения в кнопках: если прислать несколько кружочков подряд, каждый обработается свой
+    buttons = [[InlineKeyboardButton(text="Градиент", callback_data=f"grad:{msg.message_id}"),
+                InlineKeyboardButton(text="Блюр", callback_data=f"blur:{msg.message_id}")]]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     msg_answer = await msg.reply("Кружочек загружается...")
-    await msg.bot.download(file=msg.video_note.file_id, destination="../data/video_notes/" + str(msg.chat.id) + ".mp4")
+    await msg.bot.download(file=msg.video_note.file_id,
+                           destination=f"../data/video_notes/{msg.chat.id}_{msg.message_id}.mp4")
     await msg_answer.edit_text(text=WARN + "Какой тип фона в углах вы выберите?", reply_markup=keyboard)
 
 
-@router.callback_query(lambda call: call.data == "grad" or call.data == "blur")
+@router.callback_query(F.data.regexp(r"^(grad|blur):\d+$"))
 async def work_part(call: CallbackQuery) -> None:
-    msg = await call.message.edit_text(WARN + "<b>Начало обработки!</b>")
-
-    video_name = str(msg.chat.id)
+    mode, note_id = call.data.split(":")
+    video_name = f"{call.message.chat.id}_{note_id}"
     video_file = video_name + ".mp4"
+    source = "../data/video_notes/" + video_file
 
-    path = f"../data/videos/{video_name}"
-    os.mkdir(path)
-
-    path_video = path + "/" + video_file
-    os.replace("../data/video_notes/" + video_file, path_video)
-
-    path_frames = path + f"/frames"
-    os.mkdir(path_frames)
-
-    path_background = path + f"/background"
-    os.mkdir(path_background)
-
-    msg = await msg.edit_text(WARN + "<b>Этап:</b> 1 - Обработка видео.")
-    video = Movie(path_video, video_name, path)
-    procces = video.split_into_frames()
-
-    if not procces:
-        await msg.edit_text("<b>Возникла ошибка!</b> Кружочек невозможно обработать!")
-        shutil.rmtree(path)
+    if not os.path.exists(source):
+        # кнопку нажали повторно или кружочек уже обработан
+        await call.answer("Этот кружочек уже обработан. Пришлите его ещё раз.", show_alert=True)
         return
 
-    msg = await msg.edit_text(WARN + "<b>Этап:</b> 2 - Обработка кадров.")
-    frames = list(sorted(os.listdir(path_frames)))
+    msg = await call.message.edit_text(WARN + "<b>Начало обработки!</b>")
 
-    for frame in frames:
-        img = Frame(path_frames + "/" + frame, path_background + "/" + f'{frame[:-5]}-g.jpeg')
-        width, height = img.size()
+    # отдельная папка на каждую обработку и уборка в любом случае — иначе после первой же ошибки
+    # повторная обработка в этом чате падала на уже существующей папке
+    path = tempfile.mkdtemp(prefix=video_name + "-", dir="../data/videos")
+    try:
+        path_video = path + "/" + video_file
+        os.replace(source, path_video)
 
-        if call.data == "blur":
-            img.blur(width, height)
-        else:
-            r, g, b = img.medium_color(); nearly = 10
-            img.gradient(width, height, (r - nearly, g - nearly, b - nearly),
-                         (r + nearly, g + nearly, b + nearly), (True, False, False))
+        path_frames = path + "/frames"
+        os.mkdir(path_frames)
 
-        img.unity_image()
+        path_background = path + "/background"
+        os.mkdir(path_background)
 
-    msg = await msg.edit_text(WARN + "<b>Этап:</b> 3 - Объединение кадров.")
-    video.unity_into_video(frames)
+        # тяжёлая обработка — в отдельном потоке, чтобы бот не замирал для остальных пользователей
+        msg = await msg.edit_text(WARN + "<b>Этап:</b> 1 - Обработка видео.")
+        video = Movie(path_video, video_name, path)
+        if not await asyncio.to_thread(video.split_into_frames):
+            await msg.edit_text("<b>Возникла ошибка!</b> Кружочек невозможно обработать!")
+            return
 
-    msg_final = await msg.edit_text(WARN + "<b>Готово!</b> Видео отправляется...")
+        msg = await msg.edit_text(WARN + "<b>Этап:</b> 2 - Обработка кадров.")
+        frames = await asyncio.to_thread(process_frames, path_frames, path_background, mode)
 
-    await msg.answer_video(video=FSInputFile(path + "/acs-" + video_file), caption=WARN,
-                           reply_to_message_id=call.message.reply_to_message.message_id)
-    await msg_final.delete()
+        msg = await msg.edit_text(WARN + "<b>Этап:</b> 3 - Объединение кадров.")
+        result = await asyncio.to_thread(video.unity_into_video, frames)
 
-    shutil.rmtree(path)
+        msg_final = await msg.edit_text(WARN + "<b>Готово!</b> Видео отправляется...")
+
+        reply_to = call.message.reply_to_message
+        await msg.answer_video(video=FSInputFile(result), caption=WARN,
+                               reply_to_message_id=reply_to.message_id if reply_to else None)
+        await msg_final.delete()
+    except Exception:
+        logging.exception("Ошибка обработки кружочка")
+        await msg.edit_text("<b>Возникла ошибка!</b> Кружочек невозможно обработать!")
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
