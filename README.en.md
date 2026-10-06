@@ -38,7 +38,7 @@ cp .env.example .env      # BOT_TOKEN from @BotFather
 docker compose up -d
 ```
 
-Prebuilt image: `docker pull ghcr.io/edeev/circlechek` or `docker pull dcr.deev.su/edeev/circlechek`.
+Prebuilt image: `docker pull ghcr.io/edeev/circlechek` or `docker pull git.deev.su/edeev/circlechek`.
 
 Without Docker: Python 3.12, `pip install -r requirements.txt`, then `cd code && BOT_TOKEN=… python bot.py`
 (FFmpeg comes with MoviePy).
@@ -60,7 +60,7 @@ ruff check --select E9,F code
 ```
 
 CI checks the code on every push and processes test video notes (with and without sound, both
-backgrounds). The Docker image is built on `v*` tags and published to GitHub Packages and `dcr.deev.su`.
+backgrounds). The Docker image is built on `v*` tags and published to GitHub Packages and `git.deev.su`.
 
 ## License
 

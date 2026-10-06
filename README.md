@@ -37,7 +37,7 @@ cp .env.example .env      # BOT_TOKEN от @BotFather
 docker compose up -d
 ```
 
-Готовый образ: `docker pull ghcr.io/edeev/circlechek` или `docker pull dcr.deev.su/edeev/circlechek`.
+Готовый образ: `docker pull ghcr.io/edeev/circlechek` или `docker pull git.deev.su/edeev/circlechek`.
 
 Без Docker: Python 3.12, `pip install -r requirements.txt`, затем `cd code && BOT_TOKEN=… python bot.py`
 (FFmpeg ставится вместе с MoviePy).
@@ -59,7 +59,7 @@ ruff check --select E9,F code
 ```
 
 CI на каждый push проверяет код и прогоняет обработку тестовых кружочков (со звуком и без, оба вида
-фона). Docker-образ собирается по тегу `v*` и публикуется в GitHub Packages и `dcr.deev.su`.
+фона). Docker-образ собирается по тегу `v*` и публикуется в GitHub Packages и `git.deev.su`.
 
 ## Лицензия
 
